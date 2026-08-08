@@ -3,64 +3,66 @@ const cors = require('cors');
 
 const app = express();
 
-// تفعيل Cors و JSON Body Parser
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Endpoint الـ Proxy المعالج
+let globalCookie = 'PHPSESSID_3a07edcde6f57a008f3251235df79776a424dd7623e40d4250e37e4f1f15fadf=f6010385d9c7a01965b002bbc9e759de';
+
+app.post('/api/update-cookie', (req, res) => {
+    const { newCookie } = req.body;
+    if (newCookie) {
+        if (newCookie.startsWith('PHPSESSID_')) {
+            globalCookie = newCookie;
+        } else {
+            globalCookie = `PHPSESSID_3a07edcde6f57a008f3251235df79776a424dd7623e40d4250e37e4f1f15fadf=${newCookie}`;
+        }
+        return res.json({ success: true, cookie: globalCookie });
+    }
+    return res.status(400).json({ success: false, error: "Invalid cookie" });
+});
+
 app.post('/api/proxy', async (req, res) => {
+    let { targetUrl, token, payload, customHeaders } = req.body;
+
+    if (!targetUrl) {
+        return res.status(400).json({ error: "targetUrl is required" });
+    }
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Cookie': globalCookie,
+        'Referer': 'https://agents.ichancy100.com/reports/productsReport/users',
+        'Origin': 'https://agents.ichancy100.com',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(customHeaders || {})
+    };
+
+    if (token && !headers['Authorization']) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+
     try {
-        const { targetUrl, payload, token } = req.body;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-        if (!targetUrl) {
-            return res.status(400).json({ error: "targetUrl is required" });
-        }
-
-        // 1. تزوير الـ Headers ليبين الطلب كأنه طالع من متصفح Chrome طبيعي
-        const headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/plain, */*',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Origin': 'https://agents.ichancy100.com',
-            'Referer': 'https://agents.ichancy100.com/'
-        };
-
-        // إرفاق التوكين بالـ Headers في حال وجوده
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        // 2. إرسال الطلب للسيرفر الهدف
-        const apiResponse = await fetch(targetUrl, {
+        let response = await fetch(targetUrl, {
             method: 'POST',
             headers: headers,
-            body: payload ? JSON.stringify(payload) : undefined
+            body: JSON.stringify(payload || {}),
+            signal: controller.signal
         });
 
-        // 3. قراءة الرد كـ Text لحماية السيرفر من الحظر والـ Crash
-        const textData = await apiResponse.text();
+        clearTimeout(timeoutId);
 
-        try {
-            // محاولة تحويل النص القادم لـ JSON
-            const jsonData = JSON.parse(textData);
-            return res.status(apiResponse.status).json(jsonData);
-        } catch (e) {
-            // في حال رُفض الطلب ورجعت صفحة HTML (مثلاً Cloudflare Block)
-            console.error("الموقع حظر الطلب ورجّع HTML بدل JSON:", textData.substring(0, 200));
-            return res.status(400).json({
-                error: "iChancy blocked the request and returned HTML",
-                preview: textData.substring(0, 150)
-            });
-        }
-
+        let data = await response.json();
+        res.status(response.status).json(data);
     } catch (err) {
-        console.error("Proxy Error:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// تشغيل السيرفر على البورت المطلوب بـ Railway
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
 });
